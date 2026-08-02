@@ -1,0 +1,789 @@
+{
+  "name": "GitHub Post Pipeline v7 — Loop Fixed",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "d30fd026-26d9-4f6c-a44c-bab377fb4a0b",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2160,
+        3120
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "'1o6hJSG5be_YJlikIu0uVhf5sodcTZkFX' in parents and trashed = false",
+        "returnAll": true,
+        "filter": {},
+        "options": {}
+      },
+      "id": "b370d996-4f01-471c-b9da-666343751a82",
+      "name": "List Drive Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1936,
+        3120
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "ZsU6AccjkFeCrsXW",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "15c4tbActQoRMffQ6Z94lDarnrYJoS2R75KGTICUUTUM",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "processed",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/15c4tbActQoRMffQ6Z94lDarnrYJoS2R75KGTICUUTUM/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "13e7773f-f9b8-4171-8781-50be4ac2b896",
+      "name": "Read Processed Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -1440,
+        2800
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gQ4zfMk9smypO4nS",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── SAFE SHEET READ ───────────────────────────────────────────────\n// Google Sheets node throws or returns a single empty-keyed item when\n// the sheet has no data rows. We normalise that to an empty array and\n// attach the Drive file list so the next node has everything it needs.\n\n// Collect processed IDs from sheet (empty-safe)\nconst sheetItems = $input.all();\nconst processedIds = new Set(\n  sheetItems\n    .map(i => i.json.file_id)\n    .filter(v => v && typeof v === 'string' && v.trim() !== '')\n);\n\n// All files from Drive (previous node)\nconst driveFiles = $('List Drive Folder').all();\n\n// Filter to only .json files not yet processed\nconst newFiles = driveFiles.filter(f => {\n  const name = (f.json.name || '').trim();\n  return name.toLowerCase().endsWith('.json') && !processedIds.has(f.json.id);\n});\n\nif (newFiles.length === 0) {\n  // Return a sentinel — downstream IF will stop the run cleanly\n  return [{ json: { hasNewFiles: false, totalNew: 0 } }];\n}\n\n// Tag every item so IF node can check the flag\nreturn newFiles.map(f => ({\n  json: {\n    hasNewFiles: true,\n    totalNew: newFiles.length,\n    id:   f.json.id,\n    name: f.json.name\n  }\n}));"
+      },
+      "id": "bc4eefd4-0d82-4331-b865-07b1699c657a",
+      "name": "Filter New Files (empty-safe)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1824,
+        2512
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond_has_new",
+              "leftValue": "={{ $json.hasNewFiles }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d97fc691-53fd-4fae-8afc-902c0c73b134",
+      "name": "Any New Files?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1440,
+        2560
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "3215bde5-72f0-4e37-98e5-a7ab3e727ccd",
+      "name": "Split — One File at a Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1200,
+        2544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw =\n  $input.first().json.content?.parts?.[0]?.text ||\n  $input.first().json.text ||\n  $input.first().json.output ||\n  '';\n\nconst cleaned = raw\n  .replace(/^\\s*```json\\s*/i, '')\n  .replace(/^\\s*```\\s*/i, '')\n  .replace(/\\s*```\\s*$/i, '')\n  .trim();\n\nlet data;\ntry {\n  data = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error('Gemini output is not valid JSON: ' + e.message + '\\n\\nRaw output preview:\\n' + cleaned.slice(0, 1500));\n}\n\nreturn [{ json: data }];"
+      },
+      "id": "bd99a1f8-c9f7-480c-97b6-a01c9962df40",
+      "name": "Parse Gemini Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        2480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/user/repos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"name\": $json.repoName, \"description\": $json.repoDescription, \"private\": false, \"auto_init\": false } }}",
+        "options": {}
+      },
+      "id": "457a0725-6b95-4780-a948-cad8f7c1e87b",
+      "name": "Create GitHub Repo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        2336
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "vdF7FJwcPY9fCItR",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const repo = $input.first().json;\nconst docs = $('Build README + SETUP').first().json;\n\n// ── Markdown strings ──────────────────────────────────────────────────────────\nconst readmeStr = typeof docs.readme === 'string'\n  ? docs.readme\n  : JSON.stringify(docs.readme || '', null, 2);\n\nconst setupStr = typeof docs.setupGuide === 'string'\n  ? docs.setupGuide\n  : JSON.stringify(docs.setupGuide || '', null, 2);\n\n// ── Base64 encode here so HTTP nodes receive plain strings ────────────────────\nconst readmeBase64 = Buffer.from(readmeStr,  'utf8').toString('base64');\nconst setupBase64  = Buffer.from(setupStr,   'utf8').toString('base64');\n\n// ── Workflow JSON base64 ──────────────────────────────────────────────────────\nconst wfStr = typeof docs.workflowContent === 'string'\n  ? docs.workflowContent\n  : JSON.stringify(docs.workflowContent || {}, null, 2);\nconst workflowBase64 = Buffer.from(wfStr, 'utf8').toString('base64');\n\nreturn [{\n  json: {\n    owner:            repo.owner?.login,\n    repoName:         repo.name,\n    repoDescription:  repo.description,\n    repoUrl:          repo.html_url,\n    defaultBranch:    repo.default_branch || 'main',\n\n    fileName:         docs.fileName,\n    fileId:           docs.fileId,\n    workflowContent:  wfStr,\n\n    readmeContent:    readmeStr,\n    setupGuideContent: setupStr,\n\n    readmeBase64,\n    setupBase64,\n    workflowBase64\n  }\n}];\n"
+      },
+      "id": "043d15c6-c889-45bc-966b-3ad4dffe2574",
+      "name": "Store Repo Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        2816
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://api.github.com/repos/\" + $json.owner + \"/\" + $json.repoName + \"/contents/\" + encodeURIComponent($json.fileName) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{ $json.githubBody.message }}\",\n  \"content\": \"{{ $json.githubBody.content }}\"\n}",
+        "options": {}
+      },
+      "id": "51b38865-4fb8-4b73-a5b4-aa1d0e67cac4",
+      "name": "Push workflow.json",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        576,
+        2672
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "vdF7FJwcPY9fCItR",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://api.github.com/repos/\" + $json.owner + \"/\" + $json.repoName + \"/contents/README.md\" }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"message\": \"Add README.md\", \"content\": $json.readmeBase64 } }}",
+        "options": {}
+      },
+      "id": "2754c032-7145-4348-a0be-4958ab7c583c",
+      "name": "Push README.md",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        352,
+        2864
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "vdF7FJwcPY9fCItR",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://api.github.com/repos/\" + $json.owner + \"/\" + $json.repoName + \"/contents/SETUP.md\" }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"message\": \"Add SETUP.md\", \"content\": $json.setupBase64 } }}",
+        "options": {}
+      },
+      "id": "689c08fa-f54b-4f9a-ba5f-6811196f13ec",
+      "name": "Push SETUP.md",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        368,
+        3056
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "vdF7FJwcPY9fCItR",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "mode": "id",
+          "value": "15c4tbActQoRMffQ6Z94lDarnrYJoS2R75KGTICUUTUM"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "processed"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "file_name": "={{ $('Store Repo Info').item.json.fileName }}",
+            "file_id": "={{ $('Store Repo Info').item.json.fileId }}",
+            "repo_url": "={{ $('Store Repo Info').item.json.repoUrl }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "file_id",
+              "displayName": "file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "file_name",
+              "displayName": "file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "repo_url",
+              "displayName": "repo_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "9a252441-dad9-4c52-9d50-4c7d91e0dd5d",
+      "name": "Mark File as Processed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        960,
+        2752
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "T7nTjrndF9zn5TZH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Signal Split In Batches to process the next file\nreturn [{ json: { loopContinue: true } }];"
+      },
+      "id": "7ab749d5-5b6b-46f5-af0d-c2283b34fff8",
+      "name": "Loop Back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        3104
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -896,
+        2384
+      ],
+      "id": "1bef90c4-67e4-458f-8b51-c5824825194a",
+      "name": "Download file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "ZsU6AccjkFeCrsXW",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const binaryPropertyName = Object.keys($input.first().binary || {})[0];\n\nif (!binaryPropertyName) {\n  throw new Error('No binary file found from Google Drive Download node');\n}\n\n// Original file metadata comes from the Split node, not from the binary download output.\nconst currentFile = $('Split — One File at a Time').first().json;\nconst fileId = currentFile.id;\nconst fileName = currentFile.name;\n\nconst buffer = await this.helpers.getBinaryDataBuffer(0, binaryPropertyName);\nlet workflowContent = buffer.toString('utf8');\n\ntry {\n  workflowContent = JSON.stringify(JSON.parse(workflowContent), null, 2);\n} catch (e) {\n  // Keep original text if it is not valid JSON.\n}\n\nconst sourceRepoName = fileName\n  .replace(/\\.json$/i, '')\n  .replace(/[()\\[\\]]/g, '')\n  .replace(/[_\\s]+/g, '-')\n  .replace(/[^a-zA-Z0-9-]/g, '')\n  .replace(/-+/g, '-')\n  .replace(/^-|-$/g, '')\n  .toLowerCase()\n  .slice(0, 80);\n\nreturn [{\n  json: {\n    fileId,\n    fileName,\n    sourceRepoName,\n    workflowContent\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        2992
+      ],
+      "id": "21ff922e-a63d-41e2-8a05-9dc9ecb4a708",
+      "name": "Extract Workflow Content"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are a senior n8n workflow analyst.\n\nAnalyze this n8n workflow JSON:\n\n{{ $json.workflowContent }}\n\nReturn ONLY valid JSON.\nNo markdown fences.\nNo explanation.\nNo multiline markdown strings.\nNo code blocks.\nNo unescaped quotes.\n\nReturn exactly this structure:\n\n{\n  \"repoName\": \"short-clean-repo-name\",\n  \"repoDescription\": \"one sentence under 120 characters\",\n  \"overview\": \"short overview paragraph\",\n  \"features\": [\"feature 1\", \"feature 2\", \"feature 3\"],\n  \"prerequisites\": [\"requirement 1\", \"requirement 2\"],\n  \"credentials\": [\"credential 1\", \"credential 2\"],\n  \"configurationSteps\": [\"step 1\", \"step 2\", \"step 3\"],\n  \"usageSteps\": [\"step 1\", \"step 2\", \"step 3\"],\n  \"troubleshooting\": [\"issue 1\", \"issue 2\"],\n  \"securityNotes\": [\"note 1\", \"note 2\"],\n  \"servicesUsed\": [\"service 1\", \"service 2\"],\n  \"trigger\": \"how the workflow starts\",\n  \"mainPurpose\": \"what the workflow does\"\n}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -608,
+        2480
+      ],
+      "id": "cd479f93-7ba8-4fc2-843b-b34c9510e620",
+      "name": "Message a model",
+      "retryOnFail": true,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "OS9NDfkI8EazVspe",
+          "name": "Njmarketings2 Gemini API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\n\nconst clean = (value, fallback = 'n8n-workflow') => String(value || fallback)\n  .toLowerCase()\n  .replace(/[^a-z0-9-_]/g, '-')\n  .replace(/-+/g, '-')\n  .replace(/^-|-$/g, '')\n  .slice(0, 90);\n\nconst baseRepoName = clean(d.repoName || d.sourceRepoName || d.fileName || 'n8n-workflow');\nconst suffix = d.fileId ? '-' + String(d.fileId).slice(0, 5).toLowerCase().replace(/[^a-z0-9]/g, '') : '';\nconst repoName = (baseRepoName + suffix).replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 100);\n\nconst list = (items = []) => {\n  if (!Array.isArray(items) || items.length === 0) return '- Not specified';\n  return items.map(i => `- ${String(i).replace(/\\n/g, ' ')}`).join('\\n');\n};\n\nconst numbered = (items = []) => {\n  if (!Array.isArray(items) || items.length === 0) return '1. Not specified';\n  return items.map((i, index) => `${index + 1}. ${String(i).replace(/\\n/g, ' ')}`).join('\\n');\n};\n\nconst readme = `# ${repoName}\n\n## Overview\n\n${d.overview || d.mainPurpose || 'This repository contains an n8n automation workflow.'}\n\n## Features\n\n${list(d.features)}\n\n## Services Used\n\n${list(d.servicesUsed)}\n\n## Trigger\n\n${d.trigger || 'Not specified'}\n\n## Prerequisites\n\n${list(d.prerequisites)}\n\n## Credentials\n\n${list(d.credentials)}\n\n## Configuration\n\n${numbered(d.configurationSteps)}\n\n## Usage\n\n${numbered(d.usageSteps)}\n\n## Troubleshooting\n\n${list(d.troubleshooting)}\n\n## Security Notes\n\n${list(d.securityNotes)}\n`;\n\nconst setupGuide = `# Setup Guide\n\n## 1. Prerequisites\n\n${list(d.prerequisites)}\n\n## 2. Configure Credentials\n\n${list(d.credentials)}\n\n## 3. Configure Workflow\n\n${numbered(d.configurationSteps)}\n\n## 4. Test Workflow\n\n${numbered(d.usageSteps)}\n\n## 5. Troubleshooting\n\n${list(d.troubleshooting)}\n\n## 6. Production Security\n\n${list(d.securityNotes)}\n`;\n\nreturn [{\n  json: {\n    ...d,\n    repoName,\n    repoDescription: String(d.repoDescription || 'n8n automation workflow').slice(0, 120),\n    readme,\n    setupGuide,\n    readmeContent: readme,\n    setupGuideContent: setupGuide\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        2336
+      ],
+      "id": "215ba490-f017-4c92-aff1-752172f2d1dc",
+      "name": "Build README + SETUP"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -208,
+        2256
+      ],
+      "id": "47f50522-c249-4493-a979-7a8fac1321cc",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// workflowBase64 already computed in Store Repo Info\nreturn [{\n  json: {\n    ...$json,\n    githubBody: {\n      message: 'Add n8n workflow: ' + $json.fileName,\n      content: $json.workflowBase64\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        2656
+      ],
+      "id": "23e2ac1a-7d82-4299-b1be-57fc79b553f2",
+      "name": "Prepare GitHub Workflow File Body"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "c4c3e914-d915-4e74-b81e-950a9414682f",
+      "name": "Merge — Wait All Pushes",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        800,
+        2864
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "List Drive Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Drive Folder": {
+      "main": [
+        [
+          {
+            "node": "Read Processed Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Processed Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter New Files (empty-safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Files (empty-safe)": {
+      "main": [
+        [
+          {
+            "node": "Any New Files?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any New Files?": {
+      "main": [
+        [
+          {
+            "node": "Split — One File at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split — One File at a Time": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Extract Workflow Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Workflow Content": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Output": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Build README + SETUP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build README + SETUP": {
+      "main": [
+        [
+          {
+            "node": "Create GitHub Repo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GitHub Repo": {
+      "main": [
+        [
+          {
+            "node": "Store Repo Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Repo Info": {
+      "main": [
+        [
+          {
+            "node": "Prepare GitHub Workflow File Body",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Push README.md",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Push SETUP.md",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Push workflow.json": {
+      "main": [
+        [
+          {
+            "node": "Merge — Wait All Pushes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Push README.md": {
+      "main": [
+        [
+          {
+            "node": "Merge — Wait All Pushes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark File as Processed": {
+      "main": [
+        [
+          {
+            "node": "Loop Back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back": {
+      "main": [
+        [
+          {
+            "node": "Split — One File at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare GitHub Workflow File Body": {
+      "main": [
+        [
+          {
+            "node": "Push workflow.json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge — Wait All Pushes": {
+      "main": [
+        [
+          {
+            "node": "Mark File as Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c2345a41-5f92-478a-a055-d6ce0cea34e5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d5c85d4e145e25a4ce6207091858937964ff12aee744f6a7a687604581b4b8a6"
+  },
+  "id": "C676Al6W4MZPfTxBc5YtY",
+  "tags": []
+}
